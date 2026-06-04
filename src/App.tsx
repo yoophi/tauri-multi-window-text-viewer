@@ -1,51 +1,80 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+/** 현재 윈도우가 열어야 할 파일 경로 (없으면 안내 모드). */
+function pathFromQuery(): string | null {
+  return new URLSearchParams(window.location.search).get("path");
+}
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
+function Viewer({ path }: { path: string }) {
+  const [content, setContent] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    invoke<string>("read_text_file", { path })
+      .then(setContent)
+      .catch((e) => setError(String(e)));
+  }, [path]);
+
+  const fileName = path.split("/").pop() ?? path;
+
+  return (
+    <main className="viewer">
+      <header className="viewer-header">
+        <span className="file-name">{fileName}</span>
+        <span className="file-path" title={path}>
+          {path}
+        </span>
+      </header>
+      {error !== null ? (
+        <pre className="error">파일을 열 수 없습니다:{"\n"}{error}</pre>
+      ) : content === null ? (
+        <p className="loading">불러오는 중…</p>
+      ) : (
+        <pre className="content">{content}</pre>
+      )}
+    </main>
+  );
+}
+
+function Welcome() {
+  const [error, setError] = useState<string | null>(null);
+
+  async function pickFile() {
+    setError(null);
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "FT Text File", extensions: ["ft"] }],
+      });
+      if (typeof selected === "string") {
+        await invoke("open_file", { path: selected });
+      }
+    } catch (e) {
+      setError(String(e));
+    }
   }
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
+    <main className="welcome">
+      <h1>Multi-Window Text Viewer</h1>
+      <p className="hint">
+        <code>.ft</code> 파일을 더블클릭하거나 아래 버튼으로 열어보세요.
+      </p>
+      <button type="button" onClick={pickFile}>
+        파일 열기
+      </button>
+      {error !== null && <p className="error">{error}</p>}
     </main>
   );
+}
+
+function App() {
+  const path = pathFromQuery();
+  return path !== null ? <Viewer path={path} /> : <Welcome />;
 }
 
 export default App;
