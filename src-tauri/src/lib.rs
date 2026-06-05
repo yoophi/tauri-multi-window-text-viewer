@@ -70,10 +70,8 @@ fn open_file_in_window(app: &AppHandle, raw_path: &Path) {
         Ok(win) => {
             state.0.lock().unwrap().insert(path, label.clone());
 
-            // 단일 창에도 탭바를 항상 표시해, 그 탭을 드래그해 다른 창과
-            // 합치거나 분리할 수 있게 한다.
-            #[cfg(target_os = "macos")]
-            show_tab_bar(&win);
+            // 탭바는 평소 접혀 있고, 사용자가 macOS 표준 단축키
+            // "Show/Hide Tab Bar"(⇧⌘\)로 필요할 때만 펼친다.
 
             // 윈도우가 닫히면 추적 맵에서 제거.
             let app_handle = app.clone();
@@ -86,29 +84,6 @@ fn open_file_in_window(app: &AppHandle, raw_path: &Path) {
         }
         Err(e) => eprintln!("[open_file] failed to create window: {e}"),
     }
-}
-
-/// 창의 네이티브 탭바를 항상 보이게 한다(macOS).
-/// 탭이 1개여도 탭바가 표시되므로, 그 탭을 드래그해 다른 창과 병합/분리할 수 있다.
-/// 이미 표시 중이면 토글로 숨기지 않도록 가드한다.
-#[cfg(target_os = "macos")]
-fn show_tab_bar(window: &tauri::WebviewWindow) {
-    use objc2_app_kit::NSWindow;
-
-    let win = window.clone();
-    let _ = window.run_on_main_thread(move || unsafe {
-        let Ok(ptr) = win.ns_window() else {
-            return;
-        };
-        let ns_window: &NSWindow = &*ptr.cast::<NSWindow>();
-        let already_visible = ns_window
-            .tabGroup()
-            .map(|group| group.isTabBarVisible())
-            .unwrap_or(false);
-        if !already_visible {
-            ns_window.toggleTabBar(None);
-        }
-    });
 }
 
 /// 파일 없이 앱을 실행했을 때 보여줄 안내 윈도우.
@@ -137,13 +112,36 @@ fn open_file(app: AppHandle, path: String) {
     open_file_in_window(&app, Path::new(&path));
 }
 
+/// 호출한 창의 탭바 표시/숨김을 토글한다(macOS).
+/// 프론트엔드가 ⇧⌘\ 단축키를 잡아 호출한다. 평소엔 접혀 있다가
+/// 토글로 펼치면 그 탭을 드래그해 다른 창과 병합/분리할 수 있다.
+#[tauri::command]
+fn toggle_tab_bar(window: tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSWindow;
+        let _ = window.clone().run_on_main_thread(move || unsafe {
+            if let Ok(ptr) = window.ns_window() {
+                let ns_window: &NSWindow = &*ptr.cast::<NSWindow>();
+                ns_window.toggleTabBar(None);
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(OpenWindows::default())
-        .invoke_handler(tauri::generate_handler![read_text_file, open_file])
+        .invoke_handler(tauri::generate_handler![
+            read_text_file,
+            open_file,
+            toggle_tab_bar
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| match event {

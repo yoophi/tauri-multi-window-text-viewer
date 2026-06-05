@@ -74,6 +74,19 @@ function Welcome() {
 
 function App() {
   const path = pathFromQuery();
+
+  // ⇧⌘\ 로 이 창의 탭바를 토글한다(공간 절약: 평소 숨김, 필요할 때만 펼침).
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.metaKey && e.shiftKey && e.code === "Backslash") {
+        e.preventDefault();
+        invoke("toggle_tab_bar").catch(() => {});
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   return path !== null ? <Viewer path={path} /> : <Welcome />;
 }
 
