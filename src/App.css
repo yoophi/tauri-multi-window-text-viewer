@@ -117,6 +117,44 @@ body,
   background: #0077ed;
 }
 
+/* ---- 설정 ---- */
+.settings {
+  padding: 1.5rem 1.75rem;
+}
+
+.settings h1 {
+  font-size: 1.25rem;
+  margin: 0 0 0.25rem;
+}
+
+.settings-note {
+  margin: 0 0 1.25rem;
+  font-size: 0.8rem;
+  color: #8a8a8e;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid #ececec;
+  font-size: 0.9rem;
+}
+
+.settings-control {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.settings-value {
+  width: 3ch;
+  text-align: right;
+  color: #6e6e73;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     color: #f5f5f7;
@@ -128,5 +166,8 @@ body,
   }
   .welcome code {
     background: #3a3a3a;
+  }
+  .settings-row {
+    border-bottom-color: #3a3a3a;
   }
 }
