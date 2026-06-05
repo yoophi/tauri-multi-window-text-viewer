@@ -1,0 +1,39 @@
+#!/bin/sh
+# tv — open a file in "Multi-Window Text Viewer" from the command line.
+#
+# Usage:
+#   tv               # 앱 활성화(미실행이면 안내 창)
+#   tv <file>        # 파일 열기(이미 열려 있으면 그 창 활성화, 없으면 빈 창)
+#
+# 디렉터리는 열 수 없습니다(아래에서 즉시 에러 처리).
+#
+# 설치: 이 스크립트를 PATH에 두세요. 예)
+#   ln -sf "$(pwd)/scripts/tv" /usr/local/bin/tv
+#
+# 배포 시에는 APP_BIN을 설치 위치로 바꾸세요. 예)
+#   APP_BIN="/Applications/Multi-Window Text Viewer.app/Contents/MacOS/tauri-multi-window-text-viewer"
+
+# 개발 검증용 기본 경로(release 번들).
+APP_BIN="${TV_APP_BIN:-/Users/yoophi/private/2026-06-04/tauri-multi-window-text-viewer/src-tauri/target/release/bundle/macos/Multi-Window Text Viewer.app/Contents/MacOS/tauri-multi-window-text-viewer}"
+
+if [ ! -x "$APP_BIN" ]; then
+  echo "tv: app binary not found at: $APP_BIN" >&2
+  echo "tv: build it with 'pnpm tauri build --bundles app' or set TV_APP_BIN." >&2
+  exit 1
+fi
+
+if [ "$#" -eq 0 ]; then
+  # 인자 없음: 앱 활성화(미실행이면 안내 창).
+  nohup "$APP_BIN" >/dev/null 2>&1 &
+  exit 0
+fi
+
+arg="$1"
+if [ -d "$arg" ]; then
+  echo "tv: '$arg' is a directory; directories cannot be opened" >&2
+  exit 1
+fi
+
+# 상대경로는 앱이 현재 디렉터리(cwd)를 기준으로 절대경로화한다.
+nohup "$APP_BIN" "$arg" >/dev/null 2>&1 &
+exit 0

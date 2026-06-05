@@ -25,7 +25,12 @@ percent-encoding = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# 탭바 표시/숨김 토글(⇧⌘\)을 위해 NSWindow.toggleTabBar를 직접 호출한다.
+# `tv` CLI: 두 번째 실행의 argv를 첫 인스턴스로 전달한다(데스크톱 전용).
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2"
+
+# 탭바 토글(⇧⌘\)과 CLI 실행 시 앱 활성화를 위해 AppKit을 직접 호출한다.
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSResponder"] }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSResponder", "NSApplication", "NSRunningApplication"] }
 

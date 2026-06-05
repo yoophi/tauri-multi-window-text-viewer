@@ -60,9 +60,18 @@ body,
   color: #c0392b;
 }
 
-.loading {
+.loading,
+.empty-hint {
   padding: 1rem;
   color: #8a8a8e;
+}
+
+.badge-new {
+  font-size: 0.72rem;
+  color: #b25000;
+  background: #fff2e6;
+  border-radius: 4px;
+  padding: 0.1rem 0.4rem;
 }
 
 /* ---- 안내 모드 ---- */

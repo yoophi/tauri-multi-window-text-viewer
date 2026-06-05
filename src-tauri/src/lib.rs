@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
-/// 열려 있는 파일 윈도우 추적: canonical 절대경로 -> 윈도우 label.
+/// 열려 있는 윈도우 추적: 절대경로(존재 시 canonical) -> 윈도우 label.
 #[derive(Default)]
 struct OpenWindows(Mutex<HashMap<PathBuf, String>>);
 
@@ -18,49 +18,74 @@ fn label_for(path: &Path) -> String {
     format!("win-{}", hasher.finish())
 }
 
-/// 파일을 윈도우로 연다. 이미 같은 파일이 열려 있으면 그 윈도우를 포커스하고,
-/// 없으면 새 윈도우를 만든다.
-fn open_file_in_window(app: &AppHandle, raw_path: &Path) {
-    // 심볼릭 링크/상대경로를 정규화해 같은 파일이 항상 같은 키로 수렴하게 한다.
-    let path = match raw_path.canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("[open_file] cannot resolve {raw_path:?}: {e}");
-            return;
+/// 미존재 경로의 `.`/`..` 를 어휘적으로 정리한다(존재 파일은 canonicalize 사용).
+fn lexical_normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
         }
+    }
+    out
+}
+
+/// 경로를 윈도우로 연다. 이미 같은 경로가 열려 있으면 그 윈도우를 포커스하고,
+/// 없으면 새 윈도우를 만든다. 존재하지 않는 경로는 빈 창으로 연다(`new=1`).
+/// `cwd`는 상대경로를 절대경로로 만들 때 사용한다.
+fn open_target(app: &AppHandle, raw: &Path, cwd: &Path) {
+    let abs = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        cwd.join(raw)
     };
+
+    // canonicalize 성공 = 존재(뷰어), 실패 = 미존재(빈 창).
+    let (key, exists) = match abs.canonicalize() {
+        Ok(c) => (c, true),
+        Err(_) => (lexical_normalize(&abs), false),
+    };
+
+    // 디렉터리는 열지 않는다(tv 스크립트가 먼저 막지만 이중 안전).
+    if exists && key.is_dir() {
+        eprintln!("[open] {key:?} is a directory; skipping");
+        return;
+    }
 
     let state = app.state::<OpenWindows>();
 
-    // 이미 열린 윈도우가 살아 있으면 포커스만 하고 종료.
+    // 이미 열린 윈도우가 살아 있으면 포커스만 하고 종료(요구 1).
     {
         let mut map = state.0.lock().unwrap();
-        if let Some(label) = map.get(&path).cloned() {
+        if let Some(label) = map.get(&key).cloned() {
             if let Some(win) = app.get_webview_window(&label) {
                 let _ = win.set_focus();
                 return;
             }
-            // 닫힌 윈도우의 잔여 항목 → 제거 후 재생성.
-            map.remove(&path);
+            map.remove(&key);
         }
     }
 
-    let label = label_for(&path);
-    let encoded = utf8_percent_encode(&path.to_string_lossy(), NON_ALPHANUMERIC).to_string();
-    let title = path
+    let label = label_for(&key);
+    let encoded = utf8_percent_encode(&key.to_string_lossy(), NON_ALPHANUMERIC).to_string();
+    let title = key
         .file_name()
-        .map(|n| n.to_string_lossy().to_string())
+        .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Text Viewer".to_string());
 
-    let url = WebviewUrl::App(format!("index.html?path={encoded}").into());
-    let mut builder = WebviewWindowBuilder::new(app, &label, url)
+    let mut query = format!("index.html?path={encoded}");
+    if !exists {
+        query.push_str("&new=1");
+    }
+
+    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(query.into()))
         .title(title)
         .inner_size(900.0, 700.0);
 
-    // 같은 식별자의 파일 뷰어 창끼리 macOS 네이티브 탭으로 묶는다.
-    // 사용자가 타이틀바의 탭을 드래그해 창을 합치거나 분리할 수 있다.
-    // (자동 병합은 시스템 설정 "문서를 탭으로 열기: 항상"일 때 동작하며,
-    //  그 외에는 Window 메뉴의 "Merge All Windows" 또는 탭 드래그로 합칠 수 있다.)
+    // 같은 식별자의 파일 창끼리 macOS 네이티브 탭으로 묶는다(⇧⌘\로 탭바 토글).
     #[cfg(target_os = "macos")]
     {
         builder = builder.tabbing_identifier("ft-viewer");
@@ -68,10 +93,7 @@ fn open_file_in_window(app: &AppHandle, raw_path: &Path) {
 
     match builder.build() {
         Ok(win) => {
-            state.0.lock().unwrap().insert(path, label.clone());
-
-            // 탭바는 평소 접혀 있고, 사용자가 macOS 표준 단축키
-            // "Show/Hide Tab Bar"(⇧⌘\)로 필요할 때만 펼친다.
+            state.0.lock().unwrap().insert(key, label.clone());
 
             // 윈도우가 닫히면 추적 맵에서 제거.
             let app_handle = app.clone();
@@ -82,7 +104,7 @@ fn open_file_in_window(app: &AppHandle, raw_path: &Path) {
                 }
             });
         }
-        Err(e) => eprintln!("[open_file] failed to create window: {e}"),
+        Err(e) => eprintln!("[open] failed to create window: {e}"),
     }
 }
 
@@ -100,6 +122,32 @@ fn open_welcome_window(app: &AppHandle) {
     }
 }
 
+/// CLI 인자(`tv <file>`)를 처리한다. 파일 경로가 있으면 열고(없으면 활성화만),
+/// 끝에 앱을 foreground로 가져온다(요구 1·3).
+/// 첫 실행은 `setup`에서, 둘째 실행은 single-instance 콜백에서 호출된다.
+fn handle_cli(app: &AppHandle, args: Vec<String>, cwd: &Path) {
+    // args[0]은 실행 파일 경로. 첫 비옵션 인자를 파일로 본다.
+    if let Some(arg) = args.iter().skip(1).find(|a| !a.starts_with('-')) {
+        open_target(app, Path::new(arg), cwd);
+    }
+    #[cfg(target_os = "macos")]
+    activate_app(app);
+}
+
+/// 앱을 다른 앱들 위로 활성화한다(macOS).
+#[cfg(target_os = "macos")]
+fn activate_app(app: &AppHandle) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSApplication;
+    let _ = app.run_on_main_thread(|| {
+        if let Some(mtm) = MainThreadMarker::new() {
+            let ns_app = NSApplication::sharedApplication(mtm);
+            #[allow(deprecated)]
+            ns_app.activateIgnoringOtherApps(true);
+        }
+    });
+}
+
 /// 파일 내용을 읽어 프론트엔드에 전달한다.
 #[tauri::command]
 fn read_text_file(path: String) -> Result<String, String> {
@@ -109,12 +157,11 @@ fn read_text_file(path: String) -> Result<String, String> {
 /// 안내 윈도우의 "파일 열기" 버튼 등에서 호출하는 커맨드.
 #[tauri::command]
 fn open_file(app: AppHandle, path: String) {
-    open_file_in_window(&app, Path::new(&path));
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    open_target(&app, Path::new(&path), &cwd);
 }
 
-/// 호출한 창의 탭바 표시/숨김을 토글한다(macOS).
-/// 프론트엔드가 ⇧⌘\ 단축키를 잡아 호출한다. 평소엔 접혀 있다가
-/// 토글로 펼치면 그 탭을 드래그해 다른 창과 병합/분리할 수 있다.
+/// 호출한 창의 탭바 표시/숨김을 토글한다(macOS). 프론트엔드가 ⇧⌘\ 로 호출한다.
 #[tauri::command]
 fn toggle_tab_bar(window: tauri::WebviewWindow) {
     #[cfg(target_os = "macos")]
@@ -133,7 +180,19 @@ fn toggle_tab_bar(window: tauri::WebviewWindow) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default();
+
+    // single-instance는 가장 먼저 등록해야 한다. 둘째 실행의 argv/cwd를
+    // 첫 인스턴스로 전달한다(`tv <file>` CLI 진입점).
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            handle_cli(app, argv, Path::new(&cwd));
+        }));
+    }
+
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(OpenWindows::default())
@@ -142,19 +201,26 @@ pub fn run() {
             open_file,
             toggle_tab_bar
         ])
+        .setup(|app| {
+            // 첫 실행의 CLI 인자 처리(`tv <file>`). 둘째 실행은 위 콜백이 받는다.
+            let args: Vec<String> = std::env::args().collect();
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+            handle_cli(app.handle(), args, &cwd);
+            Ok(())
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| match event {
-            // macOS: 파일을 "열기"로 더블클릭하면 (콜드 스타트·실행 중 모두) 발생.
+            // macOS: Finder에서 "열기"로 더블클릭하면 발생(콜드 스타트·실행 중 모두).
             RunEvent::Opened { urls } => {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
                 for url in urls {
                     if let Ok(path) = url.to_file_path() {
-                        open_file_in_window(app, &path);
+                        open_target(app, &path, &cwd);
                     }
                 }
             }
             // 시작 직후 열린 윈도우가 하나도 없으면 안내 윈도우를 띄운다.
-            // (파일로 콜드 스타트한 경우 Opened가 먼저 파일 윈도우를 만들어 여기선 건너뛴다.)
             RunEvent::Ready => {
                 if app.webview_windows().is_empty() {
                     open_welcome_window(app);
