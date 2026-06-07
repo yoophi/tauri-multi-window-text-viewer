@@ -2,7 +2,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
 
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use tauri::menu::{Menu, MenuItemBuilder, SubmenuBuilder};
+use tauri::menu::{Menu, MenuItemBuilder, MenuItemKind, SubmenuBuilder};
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
 /// 현재 디렉터리(실패 시 루트). 상대경로를 절대경로로 만들 때 쓴다.
@@ -111,6 +111,73 @@ fn open_welcome_window(app: &AppHandle) {
     }
 }
 
+/// 새 빈 윈도우를 연다(⌘N / 파일 → 새 파일). 경로가 없는 "제목 없음" 창이며,
+/// 매번 고유 label로 새로 만든다(중복 방지 대상 아님).
+fn open_blank_window(app: &AppHandle) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let label = format!("new-{}", COUNTER.fetch_add(1, Ordering::Relaxed));
+
+    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html?new=1".into()))
+        .title("제목 없음")
+        .inner_size(900.0, 700.0);
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.tabbing_identifier("ft-viewer");
+    }
+    if let Err(e) = builder.build() {
+        eprintln!("[new] failed to create window: {e}");
+    }
+}
+
+/// ⌘T: 현재 키 윈도우(파일/빈 창 탭 그룹)에 새 빈 탭을 추가한다.
+/// 새 빈 창을 만든 뒤 keyWindow에 `addTabbedWindow`로 합친다. 탭이 2개가 되면
+/// 탭바는 macOS가 자동으로 표시한다. keyWindow가 탭 그룹이 아니면 새 창으로 연다.
+#[cfg(target_os = "macos")]
+fn open_tab(app: &AppHandle) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSWindow, NSWindowOrderingMode};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        // build 이전의 키 윈도우(탭을 붙일 기준 창)를 먼저 잡아 둔다.
+        let base = NSApplication::sharedApplication(mtm).keyWindow();
+
+        let label = format!("tab-{}", COUNTER.fetch_add(1, Ordering::Relaxed));
+        let built = WebviewWindowBuilder::new(
+            &app,
+            &label,
+            WebviewUrl::App("index.html?new=1".into()),
+        )
+        .title("제목 없음")
+        .inner_size(900.0, 700.0)
+        .tabbing_identifier("ft-viewer")
+        .build();
+        let new_win = match built {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("[tab] failed to create window: {e}");
+                return;
+            }
+        };
+
+        // 기준 창이 같은 탭 그룹(ft-viewer)일 때만 탭으로 합친다.
+        if let Some(base) = base {
+            if base.tabbingIdentifier().to_string() == "ft-viewer" {
+                if let Ok(ptr) = new_win.ns_window() {
+                    let new_ns: &NSWindow = unsafe { &*ptr.cast::<NSWindow>() };
+                    base.addTabbedWindow_ordered(new_ns, NSWindowOrderingMode::Above);
+                }
+            }
+        }
+    });
+}
+
 /// 설정 윈도우를 연다(단일). 이미 열려 있으면 그 창을 포커스한다.
 fn open_settings_window(app: &AppHandle) {
     if focus_if_open(app, "settings") {
@@ -152,6 +219,35 @@ fn toggle_key_window_tab_bar(app: &AppHandle) {
 /// 메뉴 단축키는 창이 활성이면 webview 포커스와 무관하게 동작한다.
 fn setup_menu(app: &AppHandle) -> tauri::Result<()> {
     let menu = Menu::default(app)?;
+
+    // "새 파일"(⌘N)·"새 탭"(⌘T)을 표준 File 서브메뉴 맨 위에 넣는다.
+    let new_file_item = MenuItemBuilder::new("새 파일")
+        .id("new_file")
+        .accelerator("Cmd+N")
+        .build(app)?;
+    let new_tab_item = MenuItemBuilder::new("새 탭")
+        .id("new_tab")
+        .accelerator("Cmd+T")
+        .build(app)?;
+    let mut placed = false;
+    for item in menu.items()? {
+        if let MenuItemKind::Submenu(sub) = item {
+            if sub.text().map(|t| t == "File").unwrap_or(false) {
+                sub.insert(&new_file_item, 0)?;
+                sub.insert(&new_tab_item, 1)?;
+                placed = true;
+                break;
+            }
+        }
+    }
+    if !placed {
+        // File 서브메뉴가 없으면 새로 만들어 붙인다(폴백).
+        let file = SubmenuBuilder::new(app, "파일")
+            .item(&new_file_item)
+            .item(&new_tab_item)
+            .build()?;
+        menu.append(&file)?;
+    }
 
     let settings_item = MenuItemBuilder::new("설정…")
         .id("settings")
@@ -342,6 +438,11 @@ pub fn run() {
             // 네이티브 메뉴(⌘, / ⇧⌘\)를 구성하고 이벤트를 연결한다.
             setup_menu(&handle)?;
             handle.on_menu_event(|app, event| match event.id().as_ref() {
+                "new_file" => open_blank_window(app),
+                "new_tab" => {
+                    #[cfg(target_os = "macos")]
+                    open_tab(app);
+                }
                 "settings" => open_settings_window(app),
                 "toggle_tabbar" => {
                     #[cfg(target_os = "macos")]

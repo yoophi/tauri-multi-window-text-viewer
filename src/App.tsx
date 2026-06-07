@@ -17,19 +17,19 @@ function queryParams(): {
   };
 }
 
-function Viewer({ path, isNew }: { path: string; isNew: boolean }) {
+function Viewer({ path, isNew }: { path: string | null; isNew: boolean }) {
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // 새 파일(미존재)은 읽지 않는다. 렌더에서 isNew 분기가 먼저 처리한다.
-    if (isNew) return;
+    // 새 파일(미존재/제목 없음)은 읽지 않는다. 렌더에서 isNew 분기가 먼저 처리한다.
+    if (isNew || path === null) return;
     invoke<string>("read_text_file", { path })
       .then(setContent)
       .catch((e) => setError(String(e)));
   }, [path, isNew]);
 
-  const fileName = path.split("/").pop() ?? path;
+  const fileName = path ? path.split("/").pop() ?? path : "제목 없음";
 
   return (
     <main className="viewer">
@@ -38,7 +38,7 @@ function Viewer({ path, isNew }: { path: string; isNew: boolean }) {
         {isNew ? (
           <span className="badge-new">새 파일 · 아직 저장되지 않음</span>
         ) : (
-          <span className="file-path" title={path}>
+          <span className="file-path" title={path ?? ""}>
             {path}
           </span>
         )}
@@ -213,9 +213,11 @@ function Settings() {
 
 function App() {
   const { view, path, isNew } = queryParams();
-  // 단축키(⌘, 설정 / ⇧⌘\ 탭바)는 네이티브 메뉴 accelerator가 처리한다.
+  // 단축키(⌘N 새 파일 / ⌘, 설정 / ⇧⌘\ 탭바)는 네이티브 메뉴 accelerator가 처리한다.
   if (view === "settings") return <Settings />;
-  return path !== null ? <Viewer path={path} isNew={isNew} /> : <Welcome />;
+  // path가 있거나 새 파일(⌘N: path 없이 new=1)이면 뷰어, 그 외엔 안내 창.
+  if (path !== null || isNew) return <Viewer path={path} isNew={isNew} />;
+  return <Welcome />;
 }
 
 export default App;
