@@ -90,16 +90,58 @@ function Welcome() {
   );
 }
 
-/** 설정 윈도우(샘플). 실제 저장 없이 UI 형태만 보여준다. */
+type TvStatus = {
+  path: string;
+  installed: boolean;
+  on_path: boolean;
+  up_to_date: boolean;
+};
+
+/** 설정 윈도우(샘플). 표시 설정은 아직 저장되지 않으며, CLI 도구만 실제 동작한다. */
 function Settings() {
   const [theme, setTheme] = useState("system");
   const [fontSize, setFontSize] = useState(14);
   const [wrap, setWrap] = useState(true);
 
+  const [tv, setTv] = useState<TvStatus | null>(null);
+  const [tvMsg, setTvMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refreshTv = () =>
+    invoke<TvStatus>("tv_status")
+      .then(setTv)
+      .catch((e) => setTvMsg(String(e)));
+
+  useEffect(() => {
+    refreshTv();
+  }, []);
+
+  async function run(cmd: "install_tv" | "uninstall_tv", okMsg: (r: string) => string) {
+    setBusy(true);
+    setTvMsg(null);
+    try {
+      const r = await invoke<string>(cmd);
+      setTvMsg(okMsg(r ?? ""));
+      await refreshTv();
+    } catch (e) {
+      setTvMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const tvState = !tv
+    ? "확인 중…"
+    : !tv.installed
+    ? "미설치"
+    : tv.up_to_date
+    ? "설치됨"
+    : "설치됨 (앱 위치가 바뀜 — 재설치 권장)";
+
   return (
     <main className="settings">
       <h1>설정</h1>
-      <p className="settings-note">샘플 화면입니다. 값은 아직 저장되지 않습니다.</p>
+      <p className="settings-note">표시 설정은 샘플입니다(아직 저장되지 않음).</p>
 
       <label className="settings-row">
         <span>테마</span>
@@ -132,28 +174,46 @@ function Settings() {
           onChange={(e) => setWrap(e.target.checked)}
         />
       </label>
+
+      <h2 className="settings-h2">명령줄 도구 (tv)</h2>
+      <div className="settings-row">
+        <span>상태</span>
+        <span>{tvState}</span>
+      </div>
+      {tv && <p className="settings-note settings-path">{tv.path}</p>}
+      {tv?.installed && !tv.on_path && (
+        <p className="settings-note">
+          터미널에서 <code>tv</code> 가 안 되면 <code>~/.local/bin</code> 을 PATH에
+          추가하세요.
+        </p>
+      )}
+      <div className="settings-buttons">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => run("install_tv", (p) => `설치됨: ${p}`)}
+        >
+          {tv?.installed ? "재설치" : "설치"}
+        </button>
+        {tv?.installed && (
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={() => run("uninstall_tv", () => "제거되었습니다.")}
+          >
+            제거
+          </button>
+        )}
+      </div>
+      {tvMsg && <p className="settings-note">{tvMsg}</p>}
     </main>
   );
 }
 
 function App() {
   const { view, path, isNew } = queryParams();
-
-  // 전역 단축키: ⇧⌘\ 탭바 토글, ⌘, 설정 창.
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.metaKey && e.shiftKey && e.code === "Backslash") {
-        e.preventDefault();
-        invoke("toggle_tab_bar").catch(() => {});
-      } else if (e.metaKey && e.key === ",") {
-        e.preventDefault();
-        invoke("open_settings").catch(() => {});
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
+  // 단축키(⌘, 설정 / ⇧⌘\ 탭바)는 네이티브 메뉴 accelerator가 처리한다.
   if (view === "settings") return <Settings />;
   return path !== null ? <Viewer path={path} isNew={isNew} /> : <Welcome />;
 }
