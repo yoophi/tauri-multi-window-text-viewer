@@ -213,7 +213,7 @@ function Settings() {
 
 function App() {
   const { view, path, isNew } = queryParams();
-  // 단축키(⌘N 새 파일 / ⌘, 설정 / ⇧⌘\ 탭바)는 네이티브 메뉴 accelerator가 처리한다.
+  // 단축키(⌘N 새 파일 / ⌘T 새 탭 / ⌘, 설정)는 네이티브 메뉴 accelerator가 처리한다.
   if (view === "settings") return <Settings />;
   // path가 있거나 새 파일(⌘N: path 없이 new=1)이면 뷰어, 그 외엔 안내 창.
   if (path !== null || isNew) return <Viewer path={path} isNew={isNew} />;

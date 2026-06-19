@@ -86,7 +86,7 @@ fn open_target(app: &AppHandle, raw: &Path, cwd: &Path) {
         .title(title)
         .inner_size(900.0, 700.0);
 
-    // 같은 식별자의 파일 창끼리 macOS 네이티브 탭으로 묶는다(⇧⌘\로 탭바 토글).
+    // 같은 식별자의 파일 창끼리 macOS 네이티브 탭으로 묶는다(탭 2개 이상이면 탭바 자동 표시).
     #[cfg(target_os = "macos")]
     {
         builder = builder.tabbing_identifier("ft-viewer");
@@ -197,26 +197,13 @@ fn open_settings_window(app: &AppHandle) {
     }
 }
 
-/// 현재 키 윈도우(활성 창)의 탭바 표시/숨김을 토글한다(macOS).
-/// webview 포커스가 아니라 NSApp의 keyWindow를 직접 대상으로 하므로,
-/// 창이 활성이기만 하면 동작한다.
-#[cfg(target_os = "macos")]
-fn toggle_key_window_tab_bar(app: &AppHandle) {
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::NSApplication;
-    let _ = app.run_on_main_thread(|| {
-        if let Some(mtm) = MainThreadMarker::new() {
-            let ns_app = NSApplication::sharedApplication(mtm);
-            if let Some(win) = ns_app.keyWindow() {
-                win.toggleTabBar(None);
-            }
-        }
-    });
-}
-
 /// 메뉴를 구성한다: 표준 메뉴(`Menu::default`)에 "보기" 서브메뉴를 더해
-/// 설정(⌘,)·탭 바 토글(⇧⌘\)을 네이티브 accelerator로 노출한다.
+/// 설정(⌘,)을 네이티브 accelerator로 노출한다.
 /// 메뉴 단축키는 창이 활성이면 webview 포커스와 무관하게 동작한다.
+///
+/// 참고: 단일 창의 탭 바 토글(`⇧⌘\`)은 macOS 네이티브 탭 + Tauri/wry 창에서
+/// 동작하지 않아 제거했다(2026-06-19 조사). 탭이 2개 이상이면 macOS가 탭 바를
+/// 자동으로 표시한다. 자세한 내용은 docs/20260619-tab-bar-toggle-investigation.md.
 fn setup_menu(app: &AppHandle) -> tauri::Result<()> {
     let menu = Menu::default(app)?;
 
@@ -253,14 +240,9 @@ fn setup_menu(app: &AppHandle) -> tauri::Result<()> {
         .id("settings")
         .accelerator("Cmd+,")
         .build(app)?;
-    let toggle_item = MenuItemBuilder::new("탭 바 표시/숨기기")
-        .id("toggle_tabbar")
-        .accelerator("Shift+Cmd+\\")
-        .build(app)?;
 
     let view = SubmenuBuilder::new(app, "보기")
         .item(&settings_item)
-        .item(&toggle_item)
         .build()?;
 
     menu.append(&view)?;
@@ -435,7 +417,7 @@ pub fn run() {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
-            // 네이티브 메뉴(⌘, / ⇧⌘\)를 구성하고 이벤트를 연결한다.
+            // 네이티브 메뉴(⌘N / ⌘T / ⌘,)를 구성하고 이벤트를 연결한다.
             setup_menu(&handle)?;
             handle.on_menu_event(|app, event| match event.id().as_ref() {
                 "new_file" => open_blank_window(app),
@@ -444,10 +426,6 @@ pub fn run() {
                     open_tab(app);
                 }
                 "settings" => open_settings_window(app),
-                "toggle_tabbar" => {
-                    #[cfg(target_os = "macos")]
-                    toggle_key_window_tab_bar(app);
-                }
                 _ => {}
             });
             // 첫 실행의 CLI 인자 처리(`tv <file>`). 둘째 실행은 위 콜백이 받는다.
